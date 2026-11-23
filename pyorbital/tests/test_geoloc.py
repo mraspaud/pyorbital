@@ -2056,6 +2056,25 @@ class TestFittingInSwathPixels:
         assert fit.misses.shape == (len(self.GCPS), 2)
         np.testing.assert_allclose(fit.misses, 0.0, atol=1e-2)
 
+    def test_a_few_bad_matches_do_not_drag_the_good_ones(self):
+        """Two matches fifteen samples out must not move a fit that fifty-eight others agree on.
+
+        Squared misses let each point pull in proportion to how far out it is, so a pair
+        of confident mismatches -- a cloud edge, a coast repeated inside the search --
+        would push every good point half a pixel off to meet them part way.
+        """
+        bad = [3, 41]
+        displaced = np.zeros_like(self.GCPS)
+        displaced[bad] = [0.0, 15.0]
+
+        fit = self.fit(self.references(displaced_by=displaced))
+
+        # plain least squares lands 0.17 s off here; a convex robust loss still feels the
+        # bad pair at a capped strength, so it is held to a fifth of a line, not to zero
+        assert fit.time_offset == pytest.approx(self.LATE_BY, abs=3e-2)
+        np.testing.assert_allclose(np.delete(fit.misses, bad, axis=0), 0.0, atol=5e-2)
+        np.testing.assert_allclose(fit.misses[bad], [[0.0, -15.0]] * 2, atol=0.5)
+
 
 def test_metimage_scan_geometry_shape():
     """Test that metimage produces 24 lines per scan over the full 3144-pixel swath."""

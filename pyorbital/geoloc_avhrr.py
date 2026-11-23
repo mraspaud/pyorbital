@@ -304,13 +304,21 @@ class NavigationFit(NamedTuple):
 
 def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                    yaw_steering=False, nadir_convention=None, rotation_order=None,
-                   solve_for_pitch=True, time_offset_guess=0.0, solve_for_time=True):
+                   solve_for_pitch=True, time_offset_guess=0.0, solve_for_time=True,
+                   loss="soft_l1", loss_scale=1.0):
     """Fit the time offset and attitude that carry the gcps onto their references.
 
     Each miss is judged in swath pixels rather than metres. The matching that found the
     gcps is about equally precise, in pixels, anywhere in the swath, whereas a pixel at
     the swath edge covers several times the ground it does at nadir: fitted in metres,
     the edge would outweigh the centre for no better reason than its footprint.
+
+    Squared misses would let each gcp pull in proportion to how far out it is, so a
+    few confident mismatches would drag every good point towards them. The *loss* is
+    therefore robust by default: misses within *loss_scale* pixels count as squares,
+    those beyond it roughly in proportion, which caps how hard any one point can pull.
+    Any loss :func:`scipy.optimize.least_squares` takes may be given, ``"linear"``
+    for plain least squares.
 
     The search reach and the parameters that may be held are as for
     :func:`estimate_time_and_attitude_deviations`.
@@ -335,7 +343,8 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
         return flat[np.isfinite(flat)]
 
     res = least_squares(residuals, x0=middle[free],
-                        bounds=(middle[free] - reach[free], middle[free] + reach[free]), x_scale="jac")
+                        bounds=(middle[free] - reach[free], middle[free] + reach[free]), x_scale="jac",
+                        loss=loss, f_scale=loss_scale)
     if not res.success:
         raise RuntimeError("Time and attitude estimation did not converge")
     if solve_for_time and res.active_mask[0] != 0:
