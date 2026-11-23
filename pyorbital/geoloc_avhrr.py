@@ -304,7 +304,8 @@ class NavigationFit(NamedTuple):
 
     *time_offset* is in seconds and *attitude* is roll, pitch and yaw in radians.
     *misses* are what is left of each gcp's miss after the fit, in swath lines and
-    samples, one row per gcp in the order given.
+    samples, one row per gcp in the order given. *distances* are the same leftovers
+    measured on the ground, in metres, for products that already quote them so.
 
     *covariance* is that of time offset, roll, pitch and yaw, in seconds and radians.
     A parameter that was held rather than fitted has no row or column in it beyond
@@ -317,6 +318,7 @@ class NavigationFit(NamedTuple):
     time_offset: float
     attitude: tuple
     misses: np.ndarray
+    distances: np.ndarray
     covariance: np.ndarray
     settings: dict
 
@@ -393,7 +395,18 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
     _refuse_an_unsettled_time(res, solve_for_time)
     settled = _all_four(res.x, free)
     time_diff, roll, pitch, yaw = settled * [1e3, 1, 1, 1]
-    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled), _covariance(res, free), settings)
+    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled),
+                         _ground_distances(settled, gcps, start_time, tle, max_scan_angle, refs, *geometry),
+                         _covariance(res, free), settings)
+
+
+def _ground_distances(variables, gcps, start_time, tle, max_scan_angle, refs, *geometry):
+    """Return each gcp's distance from its reference in metres, NaN in place of any not placed."""
+    time_diff, roll, pitch, yaw = variables
+    time = np.datetime64(start_time) + np.timedelta64(int(time_diff * 1e12), "ns")
+    lons, lats, _ = compute_avhrr_gcps_lonlatalt(np.asarray(gcps, dtype=float), max_scan_angle,
+                                                (roll, pitch, yaw), time, tle, *geometry)
+    return np.hypot(*_north_east(*(np.asarray(ref, dtype=float) for ref in refs), lons, lats).T)
 
 
 #: Scales a median absolute deviation to the standard deviation it stands for under normal noise.

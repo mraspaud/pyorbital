@@ -2056,6 +2056,26 @@ class TestFittingInSwathPixels:
         assert fit.misses.shape == (len(self.GCPS), 2)
         np.testing.assert_allclose(fit.misses, 0.0, atol=1e-2)
 
+    def test_the_distance_left_on_the_ground_is_kept_too(self):
+        """Products already quote the leftover distance in metres; the fit still has to supply it."""
+        rng = np.random.default_rng(3)
+        displaced = np.zeros_like(self.GCPS)
+        displaced[:, 1] = rng.normal(0.0, 0.3, len(self.GCPS))
+        displaced[7] = np.nan
+
+        fit = self.fit(self.references(displaced_by=displaced))
+
+        from pyorbital.geoloc_avhrr import compute_gcp_distances_to_reference_lonlats
+        settled = (fit.time_offset / 1e3, *fit.attitude)
+        kept = np.delete(np.arange(len(self.GCPS)), 7)
+        expected = compute_gcp_distances_to_reference_lonlats(
+            settled, self.GCPS[kept], self.STARTED, self.TLE, 55.37,
+            tuple(ref[kept] for ref in self.references(displaced_by=displaced)),
+            nadir_convention="geodetic")
+        assert fit.distances.shape == (len(self.GCPS),)
+        assert np.isnan(fit.distances[7])
+        np.testing.assert_allclose(fit.distances[kept], expected, rtol=1e-6)
+
     def test_a_few_bad_matches_do_not_drag_the_good_ones(self):
         """Two matches fifteen samples out must not move a fit that fifty-eight others agree on.
 
