@@ -2056,6 +2056,58 @@ class TestFittingInSwathPixels:
         assert fit.misses.shape == (len(self.GCPS), 2)
         np.testing.assert_allclose(fit.misses, 0.0, atol=1e-2)
 
+    def a_pass(self, late_by=0.0, attitude=(0.0, 0.0, 0.0), **geometry):
+        """Return where the gcps truly are on a pass *late_by* seconds late and so turned."""
+        geometry.setdefault("nadir_convention", "geodetic")
+        lons, lats, _ = compute_avhrr_gcps_lonlatalt(
+            self.GCPS, 55.37, attitude, self.STARTED + dt.timedelta(seconds=late_by), self.TLE, **geometry)
+        return lons, lats
+
+    def test_a_time_beyond_the_search_is_found_when_the_fit_is_told_where_to_look(self):
+        """The coarse match's shift centres the time search, which otherwise reaches seven seconds."""
+        fit = self.fit(self.a_pass(late_by=25.0), time_offset_guess=24.0, solve_for_pitch=False)
+
+        assert fit.time_offset == pytest.approx(25.0, abs=1e-2)
+
+    def test_a_time_offset_resting_on_its_bound_is_refused(self):
+        """A time the data cannot pin down would be paid for elsewhere, so it is refused instead."""
+        with pytest.raises(RuntimeError, match="did not settle"):
+            self.fit(self.a_pass(late_by=25.0), solve_for_pitch=False)
+
+    def test_a_trusted_clock_is_held_and_the_attitude_fitted_alone(self):
+        """Where the clock is known, the swath must not be slid along its track to fit."""
+        fit = self.fit(self.a_pass(attitude=(0.0, 0.0, self.YAWED_BY)), solve_for_time=False)
+
+        assert fit.time_offset == 0.0
+        assert fit.attitude[2] == pytest.approx(self.YAWED_BY, abs=1e-4)
+
+    def test_a_fit_not_asked_for_pitch_holds_it_at_zero(self):
+        """Time and pitch say the same thing along the track, so the one not wanted is pinned."""
+        fit = self.fit(self.a_pass(late_by=self.LATE_BY), solve_for_pitch=False)
+
+        assert fit.attitude[1] == 0.0
+        assert fit.time_offset == pytest.approx(self.LATE_BY, abs=1e-3)
+
+    def test_a_steered_swath_is_fitted_by_a_model_that_turns_with_it(self):
+        """A model that turns with the swath finds the attitude planted in it, and no more."""
+        fit = self.fit(self.a_pass(attitude=(0.0, 0.0, self.YAWED_BY), yaw_steering=True),
+                       yaw_steering=True, solve_for_time=False)
+
+        np.testing.assert_allclose(fit.attitude, (0.0, 0.0, self.YAWED_BY), atol=1e-4)
+
+    def test_the_fit_stands_on_the_nadir_it_is_given(self):
+        """Standing on the wrong nadir tilts the swath, and the fit takes that up as roll."""
+        refs = self.a_pass(attitude=(0.0, 0.0, self.YAWED_BY))
+        from pyorbital.geoloc_avhrr import fit_navigation
+
+        right = fit_navigation(self.GCPS, *refs, self.STARTED, self.TLE, 55.37,
+                               nadir_convention="geodetic", solve_for_time=False)
+        wrong = fit_navigation(self.GCPS, *refs, self.STARTED, self.TLE, 55.37,
+                               nadir_convention="geocentric", solve_for_time=False)
+
+        assert right.attitude[0] == pytest.approx(0.0, abs=1e-5)
+        assert abs(wrong.attitude[0]) > 1e-4
+
     def test_the_distance_left_on_the_ground_is_kept_too(self):
         """Products already quote the leftover distance in metres; the fit still has to supply it."""
         rng = np.random.default_rng(3)
