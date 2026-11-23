@@ -5,6 +5,7 @@ then minimise the distance to these positions by adjusting the time offset and a
 """
 
 import logging
+import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -113,7 +114,17 @@ def estimate_time_and_attitude_deviations(gcps, ref_lons, ref_lats, start_time, 
 
     A parameter held this way is not being ignored. It is being asserted to be zero,
     and the answer returned for it is that assertion rather than a measurement.
+
+    .. deprecated::
+        Use :func:`fit_navigation`, which judges each miss in swath pixels rather than
+        metres, keeps a few bad matches from dragging the rest, and returns each
+        point's leftover miss and the uncertainty of what it found.
     """
+    warnings.warn(
+        "estimate_time_and_attitude_deviations is deprecated and will be removed; use "
+        "fit_navigation, which judges each miss in swath pixels, robustly, and says how "
+        "far its answer can be trusted",
+        DeprecationWarning, stacklevel=2)
     from scipy.optimize import least_squares
 
     original_distances = compute_gcp_distances_to_reference_lonlats(

@@ -319,6 +319,7 @@ def test_arbitrary_point_geoloc(convention, numba_path):
         assert lats[2] == pytest.approx(expected[1][1])
 
 
+@pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
 @pytest.mark.parametrize("convention", NADIR_CONFIG_CASES)
 def test_minimize_geoloc_error(convention):
     """Test minimizing the distance to a set of gcps."""
@@ -348,6 +349,7 @@ def test_minimize_geoloc_error(convention):
         assert min(do) > max(dm)
 
 
+@pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
 def test_minimize_geoloc_error_beyond_the_bound_when_told_where_to_look():
     """A time offset outside the search box is found when a guess centres the box on it."""
     with config.set(nadir_convention="geodetic", rotation_order="legacy"):
@@ -366,6 +368,7 @@ def test_minimize_geoloc_error_beyond_the_bound_when_told_where_to_look():
         assert time_diff == pytest.approx(ref_time_displacement, abs=1e-2)
 
 
+@pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
 def test_a_time_offset_resting_on_its_bound_is_refused():
     """A time the data cannot pin down would be paid for in pitch, so refuse it instead."""
     with config.set(nadir_convention="geodetic", rotation_order="legacy"):
@@ -381,6 +384,7 @@ def test_a_time_offset_resting_on_its_bound_is_refused():
             estimate_time_and_attitude_deviations(gcps, ref_lons, ref_lats, t, tle, max_scan_angle)
 
 
+@pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
 def test_only_the_attitude_is_fitted_when_the_clock_is_trusted():
     """A disciplined clock leaves three parameters to find, not four.
 
@@ -1808,6 +1812,7 @@ def test_steering_squares_the_swath_to_the_ground_track():
         assert out_of_square(when, True) < out_of_square(when, False)
 
 
+@pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
 def test_a_steered_swath_is_fitted_by_a_model_that_turns_with_it():
     """A model that turns with the swath finds the attitude planted in it, and no more."""
     tle1 = "1 33591U 09005A   12345.45213434  .00000391  00000-0  24004-3 0  6113"
@@ -1865,6 +1870,7 @@ def test_the_gcp_geolocation_takes_the_nadir_convention_it_is_given():
     assert apart.max() > 0.01
 
 
+@pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
 def test_the_attitude_fit_stands_on_the_nadir_it_is_given():
     """A fit told which nadir the navigation used finds the attitude planted in it."""
     tle1 = "1 33591U 09005A   12345.45213434  .00000391  00000-0  24004-3 0  6113"
@@ -1934,6 +1940,7 @@ class TestFittingANavigation:
 
         assert not np.allclose(legacy_lons, corrected_lons)
 
+    @pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
     def test_a_fit_not_asked_for_pitch_holds_it_at_zero(self):
         """A shift along the track can be written as time or as pitch, so fit one.
 
@@ -1952,6 +1959,7 @@ class TestFittingANavigation:
 
         assert pitch == 0.0
 
+    @pytest.mark.filterwarnings("ignore:estimate_time_and_attitude_deviations is deprecated")
     def test_a_fit_not_asked_for_time_holds_it_at_zero(self):
         """Where the clock is known, the swath must not be slid along its track to fit."""
         from pyorbital.geoloc_avhrr import estimate_time_and_attitude_deviations
@@ -1964,6 +1972,24 @@ class TestFittingANavigation:
 
         assert seconds == 0.0
 
+
+def test_the_fit_in_metres_points_to_its_successor():
+    """The fit in metres is superseded, and a caller must be told where to go.
+
+    It weighs each miss by its footprint and lets a few bad matches drag the rest;
+    :func:`fit_navigation` judges misses in swath pixels, robustly, and says how far
+    its answer can be trusted.
+    """
+    tle = ("1 33591U 09005A   12345.45213434  .00000391  00000-0  24004-3 0  6113",
+           "2 33591 098.8821 283.2036 0013384 242.4835 117.4960 14.11432063197875")
+    t = dt.datetime(2012, 12, 12, 4, 16, 1, 575000)
+    gcps = np.array([[2, 500], [1500, 700], [20, 1000], [500, 1100], [100, 2000]])
+    ref_lons, ref_lats, _ = compute_avhrr_gcps_lonlatalt(gcps, 55.37, (0, 0, 0), t, tle,
+                                                         nadir_convention="geodetic")
+
+    with pytest.warns(DeprecationWarning, match="fit_navigation"):
+        estimate_time_and_attitude_deviations(gcps, ref_lons, ref_lats, t, tle, 55.37,
+                                              nadir_convention="geodetic", rotation_order="pitch_first")
 
 @pytest.mark.filterwarnings("ignore:pyorbital is using the legacy rotation order")
 class TestMissesInSwathPixels:
