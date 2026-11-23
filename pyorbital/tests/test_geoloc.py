@@ -2015,6 +2015,48 @@ class TestMissesInSwathPixels:
         assert np.all(np.isfinite(np.delete(misses, 4, axis=0)))
 
 
+@pytest.mark.filterwarnings("ignore:pyorbital is using the legacy rotation order")
+class TestFittingInSwathPixels:
+    """Fit a navigation to control points, judging each miss in the pixels it was measured in.
+
+    The pass is synthesised from pyorbital's own geolocation with a known time offset
+    and yaw, and its references displaced in swath pixels where a test needs them to be,
+    so the answer the fit should return is known independently of the fit.
+    """
+
+    TLE = ("1 33591U 09005A   12345.45213434  .00000391  00000-0  24004-3 0  6113",
+           "2 33591 098.8821 283.2036 0013384 242.4835 117.4960 14.11432063197875")
+    STARTED = dt.datetime(2012, 12, 12, 4, 16, 1, 575000)
+    LATE_BY = 0.51
+    YAWED_BY = 0.01
+    GCPS = np.array([[float(line), float(sample)]
+                     for line in range(20, 1200, 100) for sample in (100, 500, 1024, 1500, 1950)])
+
+    def references(self, displaced_by=None):
+        """Return where the gcps truly are, moved in swath pixels by *displaced_by* if given."""
+        seen_at = self.GCPS if displaced_by is None else self.GCPS + displaced_by
+        lons, lats, _ = compute_avhrr_gcps_lonlatalt(
+            seen_at, 55.37, (0, 0, self.YAWED_BY), self.STARTED + dt.timedelta(seconds=self.LATE_BY),
+            self.TLE, nadir_convention="geodetic")
+        return lons, lats
+
+    def fit(self, refs, **kwargs):
+        """Fit a navigation to the gcps against *refs*."""
+        from pyorbital.geoloc_avhrr import fit_navigation
+
+        return fit_navigation(self.GCPS, *refs, self.STARTED, self.TLE, 55.37,
+                              nadir_convention="geodetic", **kwargs)
+
+    def test_the_planted_navigation_is_recovered(self):
+        """On a pass the model describes exactly, the fit lands on the truth and nothing is left over."""
+        fit = self.fit(self.references())
+
+        assert fit.time_offset == pytest.approx(self.LATE_BY, abs=1e-3)
+        assert fit.attitude[2] == pytest.approx(self.YAWED_BY, abs=1e-4)
+        assert fit.misses.shape == (len(self.GCPS), 2)
+        np.testing.assert_allclose(fit.misses, 0.0, atol=1e-2)
+
+
 def test_metimage_scan_geometry_shape():
     """Test that metimage produces 24 lines per scan over the full 3144-pixel swath."""
     from pyorbital.geoloc_instrument_definitions import metimage

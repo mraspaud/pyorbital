@@ -5,6 +5,7 @@ then minimise the distance to these positions by adjusting the time offset and a
 """
 
 import logging
+from typing import NamedTuple
 
 import numpy as np
 from pyproj import Geod
@@ -286,3 +287,60 @@ def compute_gcp_misses_in_pixels(variables, gcps, start_time, tle, max_scan_angl
     ref_lons, ref_lats = (np.asarray(ref, dtype=float) for ref in refs)
     misses = _north_east(ref_lons, ref_lats, lons, lats)
     return np.einsum("nij,nj->ni", metric, misses)
+
+
+class NavigationFit(NamedTuple):
+    """What a navigation fit found, and how well it accounts for each control point.
+
+    *time_offset* is in seconds and *attitude* is roll, pitch and yaw in radians.
+    *misses* are what is left of each gcp's miss after the fit, in swath lines and
+    samples, one row per gcp in the order given.
+    """
+
+    time_offset: float
+    attitude: tuple
+    misses: np.ndarray
+
+
+def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
+                   yaw_steering=False, nadir_convention=None, rotation_order=None,
+                   solve_for_pitch=True, time_offset_guess=0.0, solve_for_time=True):
+    """Fit the time offset and attitude that carry the gcps onto their references.
+
+    Each miss is judged in swath pixels rather than metres. The matching that found the
+    gcps is about equally precise, in pixels, anywhere in the swath, whereas a pixel at
+    the swath edge covers several times the ground it does at nadir: fitted in metres,
+    the edge would outweigh the centre for no better reason than its footprint.
+
+    The search reach and the parameters that may be held are as for
+    :func:`estimate_time_and_attitude_deviations`.
+    """
+    from scipy.optimize import least_squares
+
+    refs = (ref_lons, ref_lats)
+    geometry = (yaw_steering, nadir_convention, rotation_order)
+    guessed = time_offset_guess / 1e3
+    reach = np.array((TIME_SEARCH_REACH, ATTITUDE_SEARCH_REACH, ATTITUDE_SEARCH_REACH,
+                      ATTITUDE_SEARCH_REACH))
+    middle = np.array((guessed, 0.0, 0.0, 0.0))
+    free = np.array([solve_for_time, True, solve_for_pitch, True])
+    metric = pixel_metric(middle, gcps, start_time, tle, max_scan_angle, *geometry)
+
+    def misses(variables):
+        return compute_gcp_misses_in_pixels(variables, gcps, start_time, tle, max_scan_angle, refs,
+                                            *geometry, metric=metric)
+
+    def residuals(searched):
+        flat = misses(_all_four(searched, free)).ravel()
+        return flat[np.isfinite(flat)]
+
+    res = least_squares(residuals, x0=middle[free],
+                        bounds=(middle[free] - reach[free], middle[free] + reach[free]), x_scale="jac")
+    if not res.success:
+        raise RuntimeError("Time and attitude estimation did not converge")
+    if solve_for_time and res.active_mask[0] != 0:
+        raise RuntimeError("The time offset did not settle inside its search; "
+                           "nothing in the data holds it, and the attitude pays for it")
+    settled = _all_four(res.x, free)
+    time_diff, roll, pitch, yaw = settled * [1e3, 1, 1, 1]
+    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled))
