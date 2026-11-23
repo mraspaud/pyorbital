@@ -10,7 +10,7 @@ from typing import NamedTuple
 import numpy as np
 from pyproj import Geod
 
-from pyorbital.geoloc import ScanGeometry, compute_pixels, get_lonlatalt
+from pyorbital.geoloc import ScanGeometry, _resolve_convention, compute_pixels, get_lonlatalt
 
 logger = logging.getLogger(__name__)
 geod = Geod(ellps="WGS84")
@@ -299,12 +299,16 @@ class NavigationFit(NamedTuple):
     *covariance* is that of time offset, roll, pitch and yaw, in seconds and radians.
     A parameter that was held rather than fitted has no row or column in it beyond
     zeros: it was asserted, not measured.
+
+    *settings* records every choice the fit was made with, conventions resolved to
+    the values actually used, so that a later fit can reproduce or extend it.
     """
 
     time_offset: float
     attitude: tuple
     misses: np.ndarray
     covariance: np.ndarray
+    settings: dict
 
     @property
     def uncertainty(self):
@@ -349,6 +353,15 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
     """
     from scipy.optimize import least_squares
 
+    nadir_convention = _resolve_convention(nadir_convention, "nadir_convention", "nadir convention",
+                                           "nadir_convention='geocentric'")
+    rotation_order = _resolve_convention(rotation_order, "rotation_order", "rotation order",
+                                         "rotation_order='pitch_first'")
+    settings = {"solve_for_time": bool(solve_for_time), "solve_for_pitch": bool(solve_for_pitch),
+                "time_offset_guess": float(time_offset_guess), "yaw_steering": bool(yaw_steering),
+                "nadir_convention": nadir_convention, "rotation_order": rotation_order,
+                "max_scan_angle": float(max_scan_angle), "loss": loss, "loss_scale": float(loss_scale),
+                "residual_units": "swath pixels (lines, samples)"}
     refs = (ref_lons, ref_lats)
     geometry = (yaw_steering, nadir_convention, rotation_order)
     guessed = time_offset_guess / 1e3
@@ -376,7 +389,7 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                            "nothing in the data holds it, and the attitude pays for it")
     settled = _all_four(res.x, free)
     time_diff, roll, pitch, yaw = settled * [1e3, 1, 1, 1]
-    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled), _covariance(res, free))
+    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled), _covariance(res, free), settings)
 
 
 #: Scales a median absolute deviation to the standard deviation it stands for under normal noise.

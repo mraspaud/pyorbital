@@ -2116,6 +2116,32 @@ class TestFittingInSwathPixels:
         assert abs(fit.correlation[0, 2]) > 0.99
         np.testing.assert_allclose(np.diag(fit.correlation), 1.0)
 
+    def test_the_fit_records_the_conventions_it_actually_used(self):
+        """A product has to say what it was fitted with, including what the config filled in.
+
+        Refitting a pass later, with a richer model, is only comparable if every choice
+        the first fit made can be reproduced; a convention left to the config would
+        otherwise be recorded as nothing at all.
+        """
+        from pyorbital.geoloc_avhrr import fit_navigation
+
+        with config.set(nadir_convention="geocentric", rotation_order="pitch_first"):
+            fit = fit_navigation(self.GCPS, *self.references(), self.STARTED, self.TLE, 55.37,
+                                 solve_for_pitch=False)
+
+        assert fit.settings == {
+            "solve_for_time": True,
+            "solve_for_pitch": False,
+            "time_offset_guess": 0.0,
+            "yaw_steering": False,
+            "nadir_convention": "geocentric",
+            "rotation_order": "pitch_first",
+            "max_scan_angle": 55.37,
+            "loss": "soft_l1",
+            "loss_scale": 1.0,
+            "residual_units": "swath pixels (lines, samples)",
+        }
+
 
 def test_metimage_scan_geometry_shape():
     """Test that metimage produces 24 lines per scan over the full 3144-pixel swath."""
