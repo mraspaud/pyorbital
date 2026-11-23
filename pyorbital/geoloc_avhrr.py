@@ -70,6 +70,22 @@ def _all_four(searched, free):
     return full
 
 
+def _search_box(time_offset_guess, solve_for_time, solve_for_pitch):
+    """Return the centre and half-width of the search, and which of the four parameters it frees."""
+    reach = np.array((TIME_SEARCH_REACH, ATTITUDE_SEARCH_REACH, ATTITUDE_SEARCH_REACH,
+                      ATTITUDE_SEARCH_REACH))
+    middle = np.array((time_offset_guess / 1e3, 0.0, 0.0, 0.0))
+    free = np.array([solve_for_time, True, solve_for_pitch, True])
+    return middle, reach, free
+
+
+def _refuse_an_unsettled_time(res, solve_for_time):
+    """Refuse a time offset that came to rest on the wall of its search."""
+    if solve_for_time and res.active_mask[0] != 0:
+        raise RuntimeError("The time offset did not settle inside its search; "
+                           "nothing in the data holds it, and the attitude pays for it")
+
+
 def estimate_time_and_attitude_deviations(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                                           yaw_steering=False, nadir_convention=None,
                                           rotation_order=None, solve_for_pitch=True,
@@ -105,11 +121,7 @@ def estimate_time_and_attitude_deviations(gcps, ref_lons, ref_lats, start_time, 
         yaw_steering, nadir_convention, rotation_order)
     original_median_distance = np.median(original_distances)
     logger.debug(f"GCP distances: median {original_median_distance}, std {np.std(original_distances)}")
-    guessed = time_offset_guess / 1e3
-    reach = np.array((TIME_SEARCH_REACH, ATTITUDE_SEARCH_REACH, ATTITUDE_SEARCH_REACH,
-                      ATTITUDE_SEARCH_REACH))
-    middle = np.array((guessed, 0.0, 0.0, 0.0))
-    free = np.array([solve_for_time, True, solve_for_pitch, True])
+    middle, reach, free = _search_box(time_offset_guess, solve_for_time, solve_for_pitch)
 
     def offsets(searched, *args):
         return compute_gcp_offsets_to_reference_lonlats(_all_four(searched, free), *args)
@@ -122,9 +134,7 @@ def estimate_time_and_attitude_deviations(gcps, ref_lons, ref_lats, start_time, 
     if not res.success:
         raise RuntimeError("Time and attitude estimation did not converge")
     settled = _all_four(res.x, free)
-    if solve_for_time and res.active_mask[0] != 0:
-        raise RuntimeError("The time offset did not settle inside its search; "
-                           "nothing in the data holds it, and the attitude pays for it")
+    _refuse_an_unsettled_time(res, solve_for_time)
     time_diff, roll, pitch, yaw = settled * [1e3, 1, 1, 1]
     logger.debug(f"Estimated time difference to {time_diff} seconds, "
                  f"attitude to {np.rad2deg(roll)}, {np.rad2deg(pitch)}, {np.rad2deg(yaw)} degrees")
@@ -364,11 +374,7 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                 "residual_units": "swath pixels (lines, samples)"}
     refs = (ref_lons, ref_lats)
     geometry = (yaw_steering, nadir_convention, rotation_order)
-    guessed = time_offset_guess / 1e3
-    reach = np.array((TIME_SEARCH_REACH, ATTITUDE_SEARCH_REACH, ATTITUDE_SEARCH_REACH,
-                      ATTITUDE_SEARCH_REACH))
-    middle = np.array((guessed, 0.0, 0.0, 0.0))
-    free = np.array([solve_for_time, True, solve_for_pitch, True])
+    middle, reach, free = _search_box(time_offset_guess, solve_for_time, solve_for_pitch)
     metric = pixel_metric(middle, gcps, start_time, tle, max_scan_angle, *geometry)
 
     def misses(variables):
@@ -384,9 +390,7 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                         loss=loss, f_scale=loss_scale)
     if not res.success:
         raise RuntimeError("Time and attitude estimation did not converge")
-    if solve_for_time and res.active_mask[0] != 0:
-        raise RuntimeError("The time offset did not settle inside its search; "
-                           "nothing in the data holds it, and the attitude pays for it")
+    _refuse_an_unsettled_time(res, solve_for_time)
     settled = _all_four(res.x, free)
     time_diff, roll, pitch, yaw = settled * [1e3, 1, 1, 1]
     return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled), _covariance(res, free), settings)
