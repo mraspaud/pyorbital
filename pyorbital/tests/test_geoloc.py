@@ -1955,6 +1955,41 @@ class TestFittingANavigation:
         assert seconds == 0.0
 
 
+@pytest.mark.filterwarnings("ignore:pyorbital is using the legacy rotation order")
+class TestMissesInSwathPixels:
+    """Report how far each control point lands from its reference, in the swath's own pixels.
+
+    The matching measures displacements in swath pixels, and its precision is roughly a
+    fixed fraction of a pixel wherever in the swath it looks. A pixel is about a kilometre
+    on the ground at nadir and several towards the edge, so a miss in metres says as much
+    about where the point sits in the swath as about how well it was matched.
+    """
+
+    TLE = ("1 33591U 09005A   12345.45213434  .00000391  00000-0  24004-3 0  6113",
+           "2 33591 098.8821 283.2036 0013384 242.4835 117.4960 14.11432063197875")
+    STARTED = dt.datetime(2012, 12, 12, 4, 16, 1, 575000)
+    GCPS = np.array([[float(line), float(sample)]
+                     for line in (20, 400, 800) for sample in (100, 1024, 1950)])
+
+    def references_displaced_by(self, lines, samples):
+        """Return where the control points truly are, if the swath shows them *lines* and *samples* off."""
+        lons, lats, _ = compute_avhrr_gcps_lonlatalt(
+            self.GCPS + np.array([lines, samples]), 55.37, (0, 0, 0), self.STARTED, self.TLE,
+            nadir_convention="geodetic")
+        return lons, lats
+
+    @pytest.mark.parametrize(("lines", "samples"), [(0.0, 1.0), (1.0, 0.0), (0.5, -0.5)])
+    def test_a_miss_is_counted_in_pixels_wherever_it_lands(self, lines, samples):
+        """The same miss in pixels reads the same at nadir and at the swath edge."""
+        from pyorbital.geoloc_avhrr import compute_gcp_misses_in_pixels
+
+        misses = compute_gcp_misses_in_pixels(
+            (0, 0, 0, 0), self.GCPS, self.STARTED, self.TLE, 55.37,
+            self.references_displaced_by(lines, samples), nadir_convention="geodetic")
+
+        np.testing.assert_allclose(misses, np.tile([-lines, -samples], (len(self.GCPS), 1)), atol=2e-2)
+
+
 def test_metimage_scan_geometry_shape():
     """Test that metimage produces 24 lines per scan over the full 3144-pixel swath."""
     from pyorbital.geoloc_instrument_definitions import metimage

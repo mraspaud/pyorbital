@@ -225,3 +225,64 @@ def compute_gcp_offsets_to_reference_lonlats(variables, gcps, start_time, tle, m
     bearings, distances = _misses_from_reference(variables, gcps, start_time, tle, max_scan_angle, refs,
                                                  yaw_steering, nadir_convention, rotation_order)
     return np.concatenate([distances * np.cos(bearings), distances * np.sin(bearings)])
+
+
+def _north_east(from_lons, from_lats, to_lons, to_lats):
+    """Return the step from one set of points to another, as northward and eastward metres."""
+    bearings, _, distances = geod.inv(from_lons, from_lats, to_lons, to_lats)
+    bearings = np.radians(bearings)
+    return np.stack([distances * np.cos(bearings), distances * np.sin(bearings)], axis=-1)
+
+
+def pixel_metric(variables, gcps, start_time, tle, max_scan_angle, yaw_steering=False,
+                 nadir_convention=None, rotation_order=None):
+    """Return, for each gcp, the matrix turning a ground step in metres into swath pixels.
+
+    A step of one line and one sample is taken from every gcp and its length and direction
+    on the ground measured; inverting those two steps gives the conversion. The result is
+    a stack of 2x2 matrices taking (north, east) metres to (lines, samples).
+
+    It holds only near the geometry it was computed for, but the corrections a fit makes
+    are small fractions of a degree, so the footprint barely changes across them and the
+    conversion can be computed once and kept.
+    """
+    time_diff, roll, pitch, yaw = variables
+    time = np.datetime64(start_time) + np.timedelta64(int(time_diff * 1e12), "ns")
+    gcps = np.asarray(gcps, dtype=float)
+    stepped = np.concatenate([gcps, gcps + [1.0, 0.0], gcps + [0.0, 1.0]])
+    lons, lats, _ = compute_avhrr_gcps_lonlatalt(stepped, max_scan_angle, (roll, pitch, yaw), time, tle,
+                                                yaw_steering, nadir_convention, rotation_order)
+    lons, lats = np.split(lons, 3), np.split(lats, 3)
+    per_line = _north_east(lons[0], lats[0], lons[1], lats[1])
+    per_sample = _north_east(lons[0], lats[0], lons[2], lats[2])
+    metres_per_pixel = np.stack([per_line, per_sample], axis=-1)
+    usable = np.all(np.isfinite(metres_per_pixel), axis=(1, 2))
+    metric = np.full_like(metres_per_pixel, np.nan)
+    metric[usable] = np.linalg.inv(metres_per_pixel[usable])
+    return metric
+
+
+def compute_gcp_misses_in_pixels(variables, gcps, start_time, tle, max_scan_angle, refs,
+                                 yaw_steering=False, nadir_convention=None, rotation_order=None,
+                                 metric=None):
+    """Return how far each gcp lands from its reference, in swath lines and samples.
+
+    The miss is where the navigation puts the point less where it truly is, so a
+    reference one sample further along the scan than the gcp gives a miss of minus one
+    sample. A gcp that cannot be placed keeps its row, as NaN, so the misses stay
+    aligned with the gcps they belong to.
+
+    Pass a *metric* from :func:`pixel_metric` to reuse one conversion across many calls;
+    without one it is computed at *variables*.
+    """
+    if metric is None:
+        metric = pixel_metric(variables, gcps, start_time, tle, max_scan_angle, yaw_steering,
+                              nadir_convention, rotation_order)
+    time_diff, roll, pitch, yaw = variables
+    time = np.datetime64(start_time) + np.timedelta64(int(time_diff * 1e12), "ns")
+    lons, lats, _ = compute_avhrr_gcps_lonlatalt(np.asarray(gcps, dtype=float), max_scan_angle,
+                                                (roll, pitch, yaw), time, tle,
+                                                yaw_steering, nadir_convention, rotation_order)
+    ref_lons, ref_lats = (np.asarray(ref, dtype=float) for ref in refs)
+    misses = _north_east(ref_lons, ref_lats, lons, lats)
+    return np.einsum("nij,nj->ni", metric, misses)
