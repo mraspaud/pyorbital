@@ -295,11 +295,35 @@ class NavigationFit(NamedTuple):
     *time_offset* is in seconds and *attitude* is roll, pitch and yaw in radians.
     *misses* are what is left of each gcp's miss after the fit, in swath lines and
     samples, one row per gcp in the order given.
+
+    *covariance* is that of time offset, roll, pitch and yaw, in seconds and radians.
+    A parameter that was held rather than fitted has no row or column in it beyond
+    zeros: it was asserted, not measured.
     """
 
     time_offset: float
     attitude: tuple
     misses: np.ndarray
+    covariance: np.ndarray
+
+    @property
+    def uncertainty(self):
+        """Return the standard deviation of time offset, roll, pitch and yaw, in seconds and radians."""
+        return np.sqrt(np.diag(self.covariance))
+
+    @property
+    def correlation(self):
+        """Return how the four parameters' errors move together, NaN where one was held.
+
+        Time and pitch are nearly the same observable along the track, so their
+        correlation says whether the split between them can be believed.
+        """
+        spread = self.uncertainty
+        with np.errstate(divide="ignore", invalid="ignore"):
+            correlation = self.covariance / np.outer(spread, spread)
+        correlation[:, spread == 0] = np.nan
+        correlation[spread == 0, :] = np.nan
+        return correlation
 
 
 def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
@@ -352,4 +376,26 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                            "nothing in the data holds it, and the attitude pays for it")
     settled = _all_four(res.x, free)
     time_diff, roll, pitch, yaw = settled * [1e3, 1, 1, 1]
-    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled))
+    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled), _covariance(res, free))
+
+
+#: Scales a median absolute deviation to the standard deviation it stands for under normal noise.
+_MAD_TO_SIGMA = 1.4826
+
+
+def _covariance(res, free):
+    """Return the covariance of the four parameters from a finished least-squares fit.
+
+    The spread of the misses is read from their median absolute deviation rather than
+    their sum of squares, so a few bad matches the loss already discounted do not
+    inflate it again. Time is converted from the kiloseconds the solver searched in.
+    """
+    residuals = res.fun
+    dof = max(residuals.size - res.x.size, 1)
+    scatter = _MAD_TO_SIGMA * np.median(np.abs(residuals - np.median(residuals)))
+    variance = scatter ** 2 * residuals.size / dof
+    searched = variance * np.linalg.pinv(res.jac.T @ res.jac)
+    covariance = np.zeros((4, 4))
+    covariance[np.ix_(free, free)] = searched
+    units = np.array([1e3, 1.0, 1.0, 1.0])
+    return covariance * np.outer(units, units)

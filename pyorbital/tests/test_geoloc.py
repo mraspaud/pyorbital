@@ -2075,6 +2075,47 @@ class TestFittingInSwathPixels:
         np.testing.assert_allclose(np.delete(fit.misses, bad, axis=0), 0.0, atol=5e-2)
         np.testing.assert_allclose(fit.misses[bad], [[0.0, -15.0]] * 2, atol=0.5)
 
+    def test_the_reported_uncertainty_matches_the_scatter_noise_causes(self):
+        """A fit says how far to trust it, and the figure has to be right, not merely present.
+
+        Forty passes are drawn with a third of a pixel of matching noise. The spread of
+        what they fit is the uncertainty a single pass really carries, and the one each
+        pass reports from its own misses has to agree with it.
+        """
+        rng = np.random.default_rng(0)
+        fits = [self.fit(self.references(displaced_by=rng.normal(0.0, 0.3, self.GCPS.shape)))
+                for _ in range(40)]
+
+        found = np.array([[fit.time_offset, *fit.attitude] for fit in fits])
+        reported = np.median([np.sqrt(np.diag(fit.covariance)) for fit in fits], axis=0)
+
+        np.testing.assert_allclose(reported, found.std(axis=0), rtol=0.35)
+
+    def test_a_held_parameter_carries_no_uncertainty(self):
+        """Holding the pitch at zero asserts it; reporting a spread for it would claim a measurement."""
+        rng = np.random.default_rng(1)
+
+        fit = self.fit(self.references(displaced_by=rng.normal(0.0, 0.3, self.GCPS.shape)),
+                       solve_for_pitch=False)
+
+        assert np.all(fit.covariance[2] == 0.0)
+        assert np.all(fit.covariance[:, 2] == 0.0)
+        assert np.all(np.diag(fit.covariance)[[0, 1, 3]] > 0.0)
+
+    def test_time_and_pitch_are_reported_as_trading_against_each_other(self):
+        """A pass rarely tells a late swath from a pitched one, and the fit has to say so.
+
+        The two exchange at about 2.25 seconds per degree; only the curvature across the
+        swath separates them. Their correlation is what tells a caller whether the split
+        it was handed means anything.
+        """
+        rng = np.random.default_rng(2)
+
+        fit = self.fit(self.references(displaced_by=rng.normal(0.0, 0.3, self.GCPS.shape)))
+
+        assert abs(fit.correlation[0, 2]) > 0.99
+        np.testing.assert_allclose(np.diag(fit.correlation), 1.0)
+
 
 def test_metimage_scan_geometry_shape():
     """Test that metimage produces 24 lines per scan over the full 3144-pixel swath."""
