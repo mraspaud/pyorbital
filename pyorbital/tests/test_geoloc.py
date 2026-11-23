@@ -213,6 +213,16 @@ class TestGeoloc:
         expected = np.array([0.78755832699854733, 0.78755832699854733])
         np.testing.assert_allclose(result, expected, rtol=1e-8, atol=1e-8)
 
+    def test_the_geodetic_lat_of_an_unknown_point_is_unknown(self):
+        """A point with no position must come back as NaN, not keep the iteration waiting for it."""
+        points = np.array([[7000, 0, 7000],
+                           [np.nan, np.nan, np.nan]]).T
+
+        result = geodetic_lat(points)
+
+        np.testing.assert_allclose(result[0], 0.78755832699854733, rtol=1e-8)
+        assert np.isnan(result[1])
+
     def test_subpoint(self):
         """Test nadir determination."""
         a = 6378.137  # km
@@ -1988,6 +1998,21 @@ class TestMissesInSwathPixels:
             self.references_displaced_by(lines, samples), nadir_convention="geodetic")
 
         np.testing.assert_allclose(misses, np.tile([-lines, -samples], (len(self.GCPS), 1)), atol=2e-2)
+
+    def test_a_point_that_cannot_be_placed_keeps_its_row(self):
+        """Misses are stored next to the gcps they belong to, so none may be dropped silently."""
+        from pyorbital.geoloc_avhrr import compute_gcp_misses_in_pixels
+
+        gcps = self.GCPS.copy()
+        gcps[4] = np.nan
+
+        misses = compute_gcp_misses_in_pixels(
+            (0, 0, 0, 0), gcps, self.STARTED, self.TLE, 55.37,
+            self.references_displaced_by(0.0, 1.0), nadir_convention="geodetic")
+
+        assert misses.shape == (len(gcps), 2)
+        assert np.all(np.isnan(misses[4]))
+        assert np.all(np.isfinite(np.delete(misses, 4, axis=0)))
 
 
 def test_metimage_scan_geometry_shape():
