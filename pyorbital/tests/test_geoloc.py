@@ -2082,6 +2082,29 @@ class TestFittingInSwathPixels:
         assert fit.misses.shape == (len(self.GCPS), 2)
         np.testing.assert_allclose(fit.misses, 0.0, atol=1e-2)
 
+    def test_the_fit_says_in_the_log_what_it_found_and_what_it_left(self, caplog):
+        """A run log has to show how well the navigation fitted, not only the file it wrote.
+
+        The fit in metres logged the distances it left; its successor says the same in the
+        units it fits in, with how many points it stood on and what it changed.
+        """
+        import logging
+
+        misses = np.zeros_like(self.GCPS)
+        misses[:, 1] = np.tile([0.5, -0.5], len(self.GCPS) // 2)
+
+        with caplog.at_level(logging.DEBUG, logger="pyorbital.geoloc_avhrr"):
+            self.fit(self.references(displaced_by=misses), solve_for_pitch=False)
+
+        import re
+        said = re.search(r"Fitted (\d+) control points: time offset ([-\d.]+) s.*"
+                         r"rms ([-\d.]+) lines, ([-\d.]+) samples", caplog.text)
+        assert said, caplog.text
+        assert int(said[1]) == len(self.GCPS)
+        assert float(said[2]) == pytest.approx(self.LATE_BY, abs=0.01)
+        assert float(said[3]) == pytest.approx(0.0, abs=0.02)
+        assert float(said[4]) == pytest.approx(0.5, abs=0.02)
+
     def a_pass(self, late_by=0.0, attitude=(0.0, 0.0, 0.0), **geometry):
         """Return where the gcps truly are on a pass *late_by* seconds late and so turned."""
         geometry.setdefault("nadir_convention", "geodetic")

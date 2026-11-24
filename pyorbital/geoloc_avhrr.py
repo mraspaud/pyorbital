@@ -406,7 +406,13 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
     _refuse_an_unsettled_time(res, solve_for_time)
     settled = _all_four(res.x, free)
     time_diff, roll, pitch, yaw = settled * [1e3, 1, 1, 1]
-    return NavigationFit(time_diff, (roll, pitch, yaw), misses(settled),
+    left = misses(settled)
+    placed = left[np.all(np.isfinite(left), axis=1)]
+    lines_rms, samples_rms = np.sqrt(np.mean(placed ** 2, axis=0)) if len(placed) else (np.nan, np.nan)
+    logger.debug(f"Fitted {len(placed)} control points: time offset {time_diff:.2f} s, "
+                 f"attitude {np.rad2deg(roll):.4f}, {np.rad2deg(pitch):.4f}, {np.rad2deg(yaw):.4f} degrees "
+                 f"(roll, pitch, yaw); left over, rms {lines_rms:.2f} lines, {samples_rms:.2f} samples")
+    return NavigationFit(time_diff, (roll, pitch, yaw), left,
                          _ground_distances(settled, gcps, start_time, tle, max_scan_angle, refs, *geometry),
                          _covariance(res, free), settings)
 
