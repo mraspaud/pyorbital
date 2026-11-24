@@ -409,9 +409,13 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
     left = misses(settled)
     placed = left[np.all(np.isfinite(left), axis=1)]
     lines_rms, samples_rms = np.sqrt(np.mean(placed ** 2, axis=0)) if len(placed) else (np.nan, np.nan)
+    judged = judge_what_a_fit_left(gcps, left)
     logger.debug(f"Fitted {len(placed)} control points: time offset {time_diff:.2f} s, "
                  f"attitude {np.rad2deg(roll):.4f}, {np.rad2deg(pitch):.4f}, {np.rad2deg(yaw):.4f} degrees "
-                 f"(roll, pitch, yaw); left over, rms {lines_rms:.2f} lines, {samples_rms:.2f} samples")
+                 f"(roll, pitch, yaw); left over, rms {lines_rms:.2f} lines, {samples_rms:.2f} samples; "
+                 f"{judged.mismatches} mismatches; "
+                 f"trusted rms {judged.trusted_rms[0]:.2f} lines, {judged.trusted_rms[1]:.2f} samples; "
+                 f"smooth part {judged.systematic_rms[0]:.2f} lines, {judged.systematic_rms[1]:.2f} samples")
     return NavigationFit(time_diff, (roll, pitch, yaw), left,
                          _ground_distances(settled, gcps, start_time, tle, max_scan_angle, refs, *geometry),
                          _covariance(res, free), settings)

@@ -2167,6 +2167,13 @@ class TestFittingInSwathPixels:
         assert float(said[2]) == pytest.approx(self.LATE_BY, abs=0.01)
         assert float(said[3]) == pytest.approx(0.0, abs=0.02)
         assert float(said[4]) == pytest.approx(0.5, abs=0.02)
+        # and how much of it is the navigation rather than the matching
+        judged = re.search(r"(\d+) mismatches; trusted rms ([-\d.]+) lines, ([-\d.]+) samples; "
+                           r"smooth part ([-\d.]+) lines, ([-\d.]+) samples", caplog.text)
+        assert judged, caplog.text
+        assert int(judged[1]) == 0
+        assert float(judged[3]) == pytest.approx(0.5, abs=0.02)
+        assert float(judged[5]) < 0.1
 
     def a_pass(self, late_by=0.0, attitude=(0.0, 0.0, 0.0), **geometry):
         """Return where the gcps truly are on a pass *late_by* seconds late and so turned."""
