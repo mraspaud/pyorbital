@@ -2175,6 +2175,62 @@ class TestFittingInSwathPixels:
         assert float(judged[3]) == pytest.approx(0.5, abs=0.02)
         assert float(judged[5]) < 0.1
 
+    def where_the_points_truly_stand(self, heights):
+        """Return the true positions of points seen where the planted navigation puts them, at *heights*.
+
+        Built by plain geometry, not by the fit's own shortcut: each true point is where the
+        line from the satellite to the ellipsoid point it was seen at reaches its height.
+        """
+        from pyproj import Transformer
+
+        from pyorbital.orbital import Orbital
+
+        to_cartesian = Transformer.from_crs("EPSG:4979", "EPSG:4978", always_xy=True)
+        to_geodetic = Transformer.from_crs("EPSG:4978", "EPSG:4979", always_xy=True)
+        late = self.STARTED + dt.timedelta(seconds=self.LATE_BY)
+        seen_lons, seen_lats = self.references()
+        orbit = Orbital("noaa", line1=self.TLE[0], line2=self.TLE[1])
+        lons, lats = [], []
+        for (line, sample), lon, lat, height in zip(self.GCPS, seen_lons, seen_lats, heights):
+            when = late + dt.timedelta(seconds=line / 6 + sample * 25e-6)
+            sat = np.array(to_cartesian.transform(*orbit.get_lonlatalt(when)[:2], orbit.get_lonlatalt(when)[2] * 1e3))
+            ground = np.array(to_cartesian.transform(lon, lat, 0.0))
+            low, high = 0.0, 1.0
+            for _ in range(60):
+                middle = (low + high) / 2
+                if to_geodetic.transform(*(ground + middle * (sat - ground)))[2] < height:
+                    low = middle
+                else:
+                    high = middle
+            true_lon, true_lat, _ = to_geodetic.transform(*(ground + low * (sat - ground)))
+            lons.append(true_lon)
+            lats.append(true_lat)
+        return np.array(lons), np.array(lats)
+
+    def test_a_fit_told_the_heights_finds_the_navigation_the_terrain_hid(self):
+        """A mountain is seen away from nadir of where it stands; told its height, the fit allows for it.
+
+        Without the heights, the fit takes the terrain's displacement for navigation error
+        and tilts the whole pass to meet it; with them, it finds what was planted and leaves
+        nothing behind.
+        """
+        from pyorbital.geoloc_avhrr import fit_navigation
+
+        heights = 4000.0 * (self.GCPS[:, 1] - 60.0) / 1900.0
+        true_lons, true_lats = self.where_the_points_truly_stand(heights)
+
+        def fit(**kwargs):
+            return fit_navigation(self.GCPS, true_lons, true_lats, self.STARTED, self.TLE, 55.37,
+                                  nadir_convention="geodetic", solve_for_pitch=False, **kwargs)
+
+        told = fit(heights=heights)
+        blind = fit()
+
+        assert told.attitude[2] == pytest.approx(self.YAWED_BY, abs=1e-4)
+        assert told.time_offset == pytest.approx(self.LATE_BY, abs=1e-2)
+        assert np.sqrt(np.nanmean(told.misses ** 2)) < 0.05
+        assert np.sqrt(np.nanmean(blind.misses ** 2)) > 0.3
+
     def a_pass(self, late_by=0.0, attitude=(0.0, 0.0, 0.0), **geometry):
         """Return where the gcps truly are on a pass *late_by* seconds late and so turned."""
         geometry.setdefault("nadir_convention", "geodetic")
@@ -2331,6 +2387,7 @@ class TestFittingInSwathPixels:
             "loss": "soft_l1",
             "loss_scale": 1.0,
             "residual_units": "swath pixels (lines, samples)",
+            "terrain_heights": False,
         }
 
 

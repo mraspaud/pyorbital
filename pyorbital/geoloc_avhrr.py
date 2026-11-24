@@ -356,7 +356,7 @@ class NavigationFit(NamedTuple):
 def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                    yaw_steering=False, nadir_convention=None, rotation_order=None,
                    solve_for_pitch=True, time_offset_guess=0.0, solve_for_time=True,
-                   loss="soft_l1", loss_scale=1.0):
+                   loss="soft_l1", loss_scale=1.0, heights=None):
     """Fit the time offset and attitude that carry the gcps onto their references.
 
     Each miss is judged in swath pixels rather than metres. The matching that found the
@@ -370,6 +370,13 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
     those beyond it roughly in proportion, which caps how hard any one point can pull.
     Any loss :func:`scipy.optimize.least_squares` takes may be given, ``"linear"``
     for plain least squares.
+
+    A reference stands at its true place, but the swath shows it where the line of sight
+    to it meets the ellipsoid, which for anything above sea level is further from nadir.
+    Given the *heights* of the references in metres, each is moved to where it is seen
+    before the fit, so the terrain is not taken for navigation error and the fitted
+    geometry stays that of the ellipsoid. Without them, the references are taken to lie
+    on the ellipsoid; a missing height counts as sea level.
 
     The search reach and the parameters that may be held are as for
     :func:`estimate_time_and_attitude_deviations`.
@@ -385,6 +392,10 @@ def fit_navigation(gcps, ref_lons, ref_lats, start_time, tle, max_scan_angle,
                 "nadir_convention": nadir_convention, "rotation_order": rotation_order,
                 "max_scan_angle": float(max_scan_angle), "loss": loss, "loss_scale": float(loss_scale),
                 "residual_units": "swath pixels (lines, samples)"}
+    if heights is not None:
+        ref_lons, ref_lats = where_the_references_are_seen(gcps, ref_lons, ref_lats, heights, start_time, tle,
+                                                           time_offset_guess)
+    settings["terrain_heights"] = heights is not None
     refs = (ref_lons, ref_lats)
     geometry = (yaw_steering, nadir_convention, rotation_order)
     middle, reach, free = _search_box(time_offset_guess, solve_for_time, solve_for_pitch)
@@ -507,3 +518,26 @@ def judge_what_a_fit_left(gcps, misses, threshold=MISMATCH_THRESHOLD):
     fitted = smooth @ np.linalg.lstsq(smooth, kept, rcond=None)[0]
     systematic_rms = tuple(float(value) for value in np.sqrt(np.mean(fitted ** 2, axis=0)))
     return WhatAFitLeft(trusted_rms, int(np.count_nonzero(~trusted)), systematic_rms)
+
+
+def where_the_references_are_seen(gcps, ref_lons, ref_lats, heights, start_time, tle, time_offset=0.0):
+    """Return where the satellite sees references standing at *heights* metres above the ellipsoid.
+
+    A point above the ellipsoid is seen along the line of sight beyond it, displaced away
+    from the satellite by its height times the tangent of the satellite's zenith angle
+    there. The displacement is laid off along the ground from the true position, which is
+    exact to well under a metre for the few kilometres it reaches. The satellite's direction
+    is taken at each gcp's own scan time, *time_offset* seconds after *start_time*.
+    """
+    from pyorbital.orbital import Orbital
+
+    gcps = np.asarray(gcps, dtype=float)
+    heights = np.nan_to_num(np.asarray(heights, dtype=float), nan=0.0)
+    seen_at = (np.datetime64(start_time)
+               + np.round((time_offset + gcps[:, 0] / 6 + gcps[:, 1] * 25e-6) * 1e9).astype("timedelta64[ns]"))
+    orbit = Orbital("avhrr", line1=tle[0], line2=tle[1])
+    azimuth, elevation = orbit.get_observer_look(seen_at, np.asarray(ref_lons, dtype=float),
+                                                 np.asarray(ref_lats, dtype=float), heights / 1e3)
+    away = heights * np.tan(np.deg2rad(90.0 - elevation))
+    lons, lats, _ = geod.fwd(ref_lons, ref_lats, np.asarray(azimuth) + 180.0, away)
+    return lons, lats
