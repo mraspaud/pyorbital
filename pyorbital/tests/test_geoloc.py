@@ -2041,6 +2041,69 @@ class TestMissesInSwathPixels:
         assert np.all(np.isfinite(np.delete(misses, 4, axis=0)))
 
 
+class TestJudgingWhatAFitLeft:
+    """Tell how far the trustworthy control points ended up, and how much of it is navigation.
+
+    What a fit leaves of a good point's miss is the matcher's own noise, which differs
+    from point to point, plus what the navigation still gets wrong, which varies
+    smoothly across the swath. Bad matches are neither, and must not count as either.
+    """
+
+    GCPS = np.array([[float(line), float(sample)]
+                     for line in np.linspace(0, 1200, 20) for sample in np.linspace(60, 1990, 15)])
+
+    def test_bad_matches_are_set_aside_before_the_spread_is_quoted(self):
+        """Ten mismatches among three hundred must not decide how good the rest look."""
+        from pyorbital.geoloc_avhrr import judge_what_a_fit_left
+
+        rng = np.random.default_rng(0)
+        misses = rng.normal(0.0, 0.3, self.GCPS.shape)
+        bad = rng.choice(len(self.GCPS), 10, replace=False)
+        misses[bad] += [[12.0, -15.0]] * 10
+
+        judged = judge_what_a_fit_left(self.GCPS, misses)
+
+        # the ten, and at most one good point that happened to stray as far
+        assert 10 <= judged.mismatches <= 11
+        np.testing.assert_allclose(judged.trusted_rms, 0.3, rtol=0.15)
+
+    def test_navigation_left_wrong_shows_as_a_smooth_part(self):
+        """A miss that grows across the swath is navigation the fit did not remove, not noise."""
+        from pyorbital.geoloc_avhrr import judge_what_a_fit_left
+
+        rng = np.random.default_rng(1)
+        across = (self.GCPS[:, 1] - 1024.0) / 1024.0
+        drift = np.column_stack([np.zeros(len(self.GCPS)), 1.2 * across])
+        misses = drift + rng.normal(0.0, 0.3, self.GCPS.shape)
+
+        judged = judge_what_a_fit_left(self.GCPS, misses)
+
+        assert judged.systematic_rms[1] == pytest.approx(np.sqrt(np.mean(drift[:, 1] ** 2)), rel=0.1)
+        assert judged.systematic_rms[0] < 0.1
+
+    def test_noise_alone_leaves_almost_no_smooth_part(self):
+        """Matching noise is not navigation error, however large it is."""
+        from pyorbital.geoloc_avhrr import judge_what_a_fit_left
+
+        misses = np.random.default_rng(2).normal(0.0, 1.5, self.GCPS.shape)
+
+        judged = judge_what_a_fit_left(self.GCPS, misses)
+
+        np.testing.assert_allclose(judged.trusted_rms, 1.5, rtol=0.15)
+        assert np.all(np.asarray(judged.systematic_rms) < 0.3)
+
+    def test_points_that_could_not_be_placed_are_left_out(self):
+        """A NaN row is no point at all, and is counted as neither good nor bad."""
+        from pyorbital.geoloc_avhrr import judge_what_a_fit_left
+
+        misses = np.random.default_rng(3).normal(0.0, 0.3, self.GCPS.shape)
+        misses[5] = np.nan
+
+        judged = judge_what_a_fit_left(self.GCPS, misses)
+
+        assert judged.mismatches <= 1
+        assert np.all(np.isfinite(judged.trusted_rms))
+
 @pytest.mark.filterwarnings("ignore:pyorbital is using the legacy rotation order")
 class TestFittingInSwathPixels:
     """Fit a navigation to control points, judging each miss in the pixels it was measured in.

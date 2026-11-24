@@ -446,3 +446,60 @@ def _covariance(res, free):
     covariance[np.ix_(free, free)] = searched
     units = np.array([1e3, 1.0, 1.0, 1.0])
     return covariance * np.outer(units, units)
+
+
+#: How far, in robust standard deviations of its two axes taken together, a miss may stray
+#: from the rest before it is taken for a mismatch rather than a measurement. Under normal
+#: matching noise one good point in a thousand strays further (the 99.9 % radius of two
+#: independent axes); judging each axis alone at three would set aside five in a thousand.
+MISMATCH_THRESHOLD = 3.72
+
+
+class WhatAFitLeft(NamedTuple):
+    """How far the trustworthy control points ended up, and how much of it is navigation.
+
+    *trusted_rms* is the root mean square of the misses left on the points that are not
+    mismatches, in swath lines and samples. *mismatches* counts the points set aside.
+    *systematic_rms* is the part of those misses that varies smoothly across the swath,
+    in lines and samples: navigation the fit did not remove, as opposed to the matcher's
+    own noise, which differs from point to point.
+    """
+
+    trusted_rms: tuple
+    mismatches: int
+    systematic_rms: tuple
+
+
+def judge_what_a_fit_left(gcps, misses, threshold=MISMATCH_THRESHOLD):
+    """Judge the misses a navigation fit left on its control points.
+
+    A point is a mismatch when its miss strays more than *threshold* from the median of
+    all the misses, each axis measured in its own robust standard deviation, read from
+    the median absolute deviation. The rest are trusted.
+
+    The smooth part is fitted to the trusted misses with the terms a smooth geometry
+    leaves -- a constant, a slope along and across the swath, and their product -- and
+    quoted as its root mean square over those points. It cannot fully tell noise from
+    geometry: pure noise of spread s leaves about s times the square root of four over
+    the number of points in it.
+    """
+    gcps = np.asarray(gcps, dtype=float)
+    misses = np.asarray(misses, dtype=float)
+    placed = np.all(np.isfinite(misses), axis=1) & np.all(np.isfinite(gcps), axis=1)
+    gcps, misses = gcps[placed], misses[placed]
+    if len(misses) == 0:
+        return WhatAFitLeft((np.nan, np.nan), 0, (np.nan, np.nan))
+
+    centre = np.median(misses, axis=0)
+    spread = _MAD_TO_SIGMA * np.median(np.abs(misses - centre), axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        strays = np.hypot(*np.where(spread > 0, (misses - centre) / spread, 0.0).T)
+    trusted = strays <= threshold
+    kept, where = misses[trusted], gcps[trusted]
+    trusted_rms = tuple(float(value) for value in np.sqrt(np.mean(kept ** 2, axis=0)))
+
+    line, sample = ((where - where.mean(axis=0)) / np.maximum(where.std(axis=0), 1.0)).T
+    smooth = np.column_stack([np.ones_like(line), line, sample, line * sample])
+    fitted = smooth @ np.linalg.lstsq(smooth, kept, rcond=None)[0]
+    systematic_rms = tuple(float(value) for value in np.sqrt(np.mean(fitted ** 2, axis=0)))
+    return WhatAFitLeft(trusted_rms, int(np.count_nonzero(~trusted)), systematic_rms)
